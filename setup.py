@@ -6,7 +6,7 @@ setup(
     author="@LoisaidaSam",
     author_email="sam.sandberg@gmail.com",
     description="A Python wrapper for Slack's API",
-    install_requires=["requests"],
+    install_requires=["requests", "unirest"],
     keywords="slack api wrapper",
     license="MIT",
     name="pyslack-real",

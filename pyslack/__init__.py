@@ -1,6 +1,7 @@
 import datetime
 import logging
 import requests
+import unirest
 
 
 class SlackError(Exception):
@@ -8,12 +9,20 @@ class SlackError(Exception):
 
 
 class SlackClient(object):
-
     BASE_URL = 'https://slack.com/api'
 
-    def __init__(self, token, verify=False):
+    def __init__(self, token, verify=False, async=False, callback=None):
+        """
+        :param token:
+        :param verify:
+        :param async:
+        :param callback: function call_back(response): # do whatever you want with response
+        :return:
+        """
         self.token = token
         self.verify = verify
+        self.async = async
+        self.callback = callback or self._response_handler
         self.blocked_until = None
         self.channel_name_id_map = {}
 
@@ -27,26 +36,17 @@ class SlackClient(object):
         http://requests.readthedocs.org/en/latest/user/advanced/#ssl-cert-verification
         """
         if self.blocked_until is not None and \
-                datetime.datetime.utcnow() < self.blocked_until:
+                        datetime.datetime.utcnow() < self.blocked_until:
             raise SlackError("Too many requests - wait until {0}" \
-                    .format(self.blocked_until))
+                             .format(self.blocked_until))
 
         url = "%s/%s" % (SlackClient.BASE_URL, method)
         params['token'] = self.token
-        response = requests.post(url, data=params, verify=self.verify)
-
-        if response.status_code == 429:
-            # Too many requests
-            retry_after = int(response.headers.get('retry-after', '1'))
-            self.blocked_until = datetime.datetime.utcnow() + \
-                    datetime.timedelta(seconds=retry_after)
-            raise SlackError("Too many requests - retry after {0} second(s)" \
-                    .format(retry_after))
-
-        result = response.json()
-        if not result['ok']:
-            raise SlackError(result['error'])
-        return result
+        if self.async:
+            unirest.post(url, params=params, callback=self.callback)
+        else:
+            response = requests.post(url, data=params, verify=self.verify)
+            return self.response_handler(response)
 
     def channels_list(self, exclude_archived=True, **params):
         """channels.list
@@ -108,6 +108,27 @@ class SlackClient(object):
         })
         return self._make_request(method, params)
 
+    def _response_handler(self, response):
+        """
+        This method handle response
+        :param response: response object
+        :return:
+        """
+        code = response.code if self.async else response.status_code  # The HTTP status code
+        result = response.body if self.async else response.json()  # The parsed response
+
+        if code == 429:
+            # Too many requests
+            retry_after = int(response.headers.get('retry-after', '1'))
+            self.blocked_until = datetime.datetime.utcnow() + \
+                                 datetime.timedelta(seconds=retry_after)
+            raise SlackError("Too many requests - retry after {0} second(s)" \
+                             .format(retry_after))
+
+        if not result['ok']:
+            raise SlackError(result['error'])
+        return result
+
 
 class SlackHandler(logging.Handler):
     """A logging handler that posts messages to a Slack channel!
@@ -115,6 +136,7 @@ class SlackHandler(logging.Handler):
     References:
     http://docs.python.org/2/library/logging.html#handler-objects
     """
+
     def __init__(self, token, channel, verify=False, **kwargs):
         super(SlackHandler, self).__init__()
         self.client = SlackClient(token, verify)
